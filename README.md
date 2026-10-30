@@ -1,3 +1,4 @@
+<img width="1969" height="788" alt="_home_sahi_Downloads_salesez_marquee_promo_tile_1400x560 html" src="https://github.com/user-attachments/assets/0da46687-9cbc-4f05-bbe7-108e7c6245e5" />
 # SalesEZ: LinkedIn Sales Navigator Scraper & Lead Extractor
 
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-blue)
