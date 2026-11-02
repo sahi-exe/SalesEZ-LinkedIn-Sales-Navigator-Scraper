@@ -56,7 +56,7 @@ Built for **founders, SDRs, B2B marketers, and recruiters**, SalesEZ eliminates 
 
 ## 🚀 How to Use
 
-1. **Install** SalesEZ from the [Chrome Web Store](https://chromewebstore.google.com/) (or load unpacked in Developer Mode — see below).
+1. **Install** SalesEZ from the [Chrome Web Store](https://chromewebstore.google.com/detail/aeippbgnjijhobaaanfbfhhjjppjbdlk)) (or load unpacked in Developer Mode — see below).
 2. Open **LinkedIn Sales Navigator** and run any **People search**.
 3. Click the **SalesEZ** icon in your browser toolbar.
 4. Set your **Target Results** (1–5,000 leads).
@@ -69,7 +69,7 @@ Built for **founders, SDRs, B2B marketers, and recruiters**, SalesEZ eliminates 
 
 ### Option A: Chrome Web Store (Recommended)
 
-1. Visit the [SalesEZ listing](https://chromewebstore.google.com/) (or search "SalesEZ LinkedIn Sales Navigator Scraper").
+1. Visit the [SalesEZ listing]((https://chromewebstore.google.com/detail/aeippbgnjijhobaaanfbfhhjjppjbdlk)) (or search "SalesEZ LinkedIn Sales Navigator Scraper").
 2. Click **Add to Chrome** → **Add extension**.
 
 ### Option B: Developer Mode (Unpacked)
