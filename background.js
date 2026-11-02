@@ -1,6 +1,7 @@
 const SNAPI_DELAY_MIN = 8000;
 const SNAPI_DELAY_MAX = 15000;
 const SNAPI_RETRIES = 2;
+const SNAPI_STALE_MS = 24 * 60 * 60 * 1000;
 
 const SNAPI = {
   running: false,
@@ -10,8 +11,7 @@ const SNAPI = {
 };
 
 const SNAPI_SESSION = {
-  csrfToken: '',
-  liAt: ''
+  csrfToken: ''
 };
 
 function snapiLog() {}
@@ -30,16 +30,14 @@ async function snapiReadCookies() {
 
 function snapiRefreshSession(cookies) {
   SNAPI_SESSION.csrfToken = (cookies.JSESSIONID || '').replace(/^"|"$/g, '');
-  SNAPI_SESSION.liAt = cookies.liAt || '';
 }
 
-const SNAPI_MAIN_FETCH = async function (url, csrfToken, liAt) {
+const SNAPI_MAIN_FETCH = async function (url, csrfToken) {
   const headers = {
     Accept: 'application/json; charset=UTF-8',
     'csrf-token': csrfToken,
     'x-restli-protocol-version': '2.0.0'
   };
-  if (liAt) headers['x-li-at'] = liAt;
   try {
     const res = await fetch(url, {
       method: 'GET',
@@ -81,6 +79,19 @@ function snapiDeep(obj, path) {
   return cur;
 }
 
+function snapiSafeHttpUrl(val) {
+  if (val === undefined || val === null) return '';
+  const value = String(val).trim();
+  if (!value) return '';
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '';
+    return value;
+  } catch (_) {
+    return '';
+  }
+}
+
 function snapiCompanyUrl(lead) {
   const positions = Array.isArray(lead.currentPositions) ? lead.currentPositions : [];
   const positionUrn = positions[0] && positions[0].companyUrn;
@@ -89,7 +100,7 @@ function snapiCompanyUrl(lead) {
     if (id) return 'https://www.linkedin.com/sales/company/' + id;
   }
   const direct = snapiPick(lead, ['companyUrl', 'company.url', 'company.websiteUrl']);
-  if (direct) return String(direct);
+  if (direct) return snapiSafeHttpUrl(direct);
   const urn = snapiPick(lead, ['companyUrn', 'companyId', 'company.hashId', 'company.entityUrn']);
   if (urn !== undefined && urn !== null) {
     const id = String(urn).split(':').pop();
@@ -118,7 +129,7 @@ function snapiProfileUrl(lead) {
   const pid = snapiPick(lead, ['publicIdentifier', 'public_id', 'profileId']);
   if (pid) return 'https://www.linkedin.com/in/' + encodeURIComponent(String(pid));
   const direct = snapiPick(lead, ['publicProfileUrl', 'profileUrl', 'url']);
-  if (direct) return String(direct);
+  if (direct) return snapiSafeHttpUrl(direct);
   return '';
 }
 
@@ -150,6 +161,16 @@ function snapiParseLead(node) {
   };
 }
 
+function snapiStripStartParam(urlString) {
+  try {
+    const url = new URL(urlString);
+    url.searchParams.delete('start');
+    return url.toString();
+  } catch (_) {
+    return urlString;
+  }
+}
+
 function snapiSetUrlParam(urlString, name, value) {
   const qIdx = urlString.indexOf('?');
   if (qIdx === -1) {
@@ -172,31 +193,43 @@ function buildReplayUrl(baseUrl, start, count) {
   return url;
 }
 
+async function snapiExecuteFetch(task, url, world) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: task.tabId },
+    world,
+    func: SNAPI_MAIN_FETCH,
+    args: [url, SNAPI_SESSION.csrfToken]
+  });
+  return results && results[0] ? results[0].result : null;
+}
+
 async function snapiFetch(task, start) {
   const url = buildReplayUrl(task.baseUrl, start, task.count);
-  let results;
+  let payload = null;
+  let lastError = null;
   try {
-    results = await chrome.scripting.executeScript({
-      target: { tabId: task.tabId },
-      world: 'MAIN',
-      func: SNAPI_MAIN_FETCH,
-      args: [url, SNAPI_SESSION.csrfToken, SNAPI_SESSION.liAt]
-    });
+    payload = await snapiExecuteFetch(task, url, 'ISOLATED');
   } catch (e) {
-    return {
-      status: 0,
-      ok: false,
-      data: null,
-      message: 'MAIN world injection failed: ' + String((e && e.message) || e)
-    };
+    lastError = e;
   }
-  const payload = results && results[0] && results[0].result;
+  if (!payload || typeof payload.status !== 'number' || payload.status === 0) {
+    try {
+      payload = await snapiExecuteFetch(task, url, 'MAIN');
+    } catch (e) {
+      lastError = e;
+      payload = null;
+    }
+  }
   if (!payload || typeof payload.status !== 'number') {
     return {
       status: 0,
       ok: false,
       data: null,
-      message: 'MAIN world returned no result (tab may have navigated away)'
+      message:
+        'Injected fetch returned no result' +
+        (lastError
+          ? ': ' + String((lastError && lastError.message) || lastError)
+          : ' (tab may have navigated away)')
     };
   }
   if (payload.status === 0) {
@@ -256,11 +289,15 @@ async function snapiCommit(task) {
     updatedAt: task.updatedAt,
     error: task.lastError || null
   };
-  await chrome.storage.local.set({
-    ['sn_task_' + task.tabId]: task,
-    ['sn_state_' + task.tabId]: state,
-    ['sn_leads_' + task.tabId]: task.leads
-  });
+  const leads = Array.isArray(task.leads) ? task.leads : null;
+  const storedTask = Object.assign({}, task, { leadsCount: leads ? leads.length : 0 });
+  delete storedTask.leads;
+  const payload = {
+    ['sn_task_' + task.tabId]: storedTask,
+    ['sn_state_' + task.tabId]: state
+  };
+  if (leads) payload['sn_leads_' + task.tabId] = leads;
+  await chrome.storage.local.set(payload);
   chrome.runtime.sendMessage({ type: 'SCRAPE_PROGRESS', state }).catch(() => {});
 }
 
@@ -273,6 +310,9 @@ function snapiSleep() {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+const snapiLeadKey = (lead) =>
+  lead.profileUrl || [lead.name, lead.company, lead.jobTitle, lead.location].join('|').toLowerCase();
+
 async function snapiRun(task) {
   SNAPI.running = true;
   SNAPI.stopped = false;
@@ -281,7 +321,7 @@ async function snapiRun(task) {
 
   const seen = new Set();
   for (const lead of task.leads) {
-    seen.add(lead.profileUrl || lead.name);
+    seen.add(snapiLeadKey(lead));
   }
 
   let start = Number(task.start) || 0;
@@ -348,6 +388,8 @@ async function snapiRun(task) {
       break;
     }
 
+    retries = SNAPI_RETRIES;
+
     const root = res.data || {};
     const elements = snapiExtractElements(root);
     const total = snapiExtractTotal(root);
@@ -359,7 +401,7 @@ async function snapiRun(task) {
         if (task.leads.length >= task.targetCount) break;
         const lead = snapiParseLead(el);
         if (!lead) continue;
-        const key = lead.profileUrl || lead.name;
+        const key = snapiLeadKey(lead);
         if (seen.has(key)) continue;
         seen.add(key);
         task.leads.push(lead);
@@ -395,6 +437,11 @@ async function snapiRun(task) {
     if (!hasMore && elements.length === 0) {
       task.finished = 'complete';
       break;
+    }
+
+    if (iteration > 0 && iteration % 10 === 0) {
+      const cooldown = 15000 + Math.floor(Math.random() * 10001);
+      await new Promise((r) => setTimeout(r, cooldown));
     }
 
     await snapiSleep();
@@ -454,7 +501,9 @@ async function snapiStop(tabId) {
   if (SNAPI.running) return;
   const res = await chrome.storage.local.get('sn_task_' + tabId);
   const t = res['sn_task_' + tabId];
-  if (t && t.finished !== true) {
+  if (t && !t.finished) {
+    t.leads = (await storageGet(leadsKey(tabId))) || [];
+    if (!Array.isArray(t.leads)) t.leads = [];
     t.finished = 'stopped';
     await snapiCommit(t);
   }
@@ -466,19 +515,27 @@ function snapiStopAll() {
   }
 }
 
+let snapiResumeInFlight = false;
+
 async function snapiResumeAll() {
-  if (SNAPI.running) return;
-  const all = await chrome.storage.local.get(null);
-  for (const key of Object.keys(all)) {
-    if (key.startsWith('sn_task_')) {
-      const task = all[key];
-      if (task && task.tabId != null && !task.finished && SNAPI.running === false) {
-        snapiLog('resuming scrape for task', task.tabId);
-        task.leads = Array.isArray(task.leads) ? task.leads : [];
-        snapiRun(task).catch((e) => snapiWarn('resumed driver crashed', e));
-        return;
+  if (SNAPI.running || snapiResumeInFlight) return;
+  snapiResumeInFlight = true;
+  try {
+    const all = await chrome.storage.local.get(null);
+    for (const key of Object.keys(all)) {
+      if (key.startsWith('sn_task_')) {
+        const task = all[key];
+        if (task && task.tabId != null && !task.finished && SNAPI.running === false) {
+          snapiLog('resuming scrape for task', task.tabId);
+          task.leads = (await storageGet('sn_leads_' + task.tabId)) || [];
+          if (!Array.isArray(task.leads)) task.leads = [];
+          snapiRun(task).catch((e) => snapiWarn('resumed driver crashed', e));
+          return;
+        }
       }
     }
+  } finally {
+    snapiResumeInFlight = false;
   }
 }
 
@@ -517,6 +574,46 @@ async function storageRemove(key) {
   await chrome.storage.local.remove(key);
 }
 
+async function snapiPruneStorage() {
+  try {
+    const all = await chrome.storage.local.get(null);
+    const openTabs = new Set((await chrome.tabs.query({})).map((tab) => tab.id));
+    const now = Date.now();
+    const prefixes = [TASK_PREFIX, STATE_PREFIX, LEADS_PREFIX, 'sn_url_'];
+    const tabIds = new Set();
+    for (const key of Object.keys(all)) {
+      for (const prefix of prefixes) {
+        if (key.startsWith(prefix)) {
+          tabIds.add(key.slice(prefix.length));
+          break;
+        }
+      }
+    }
+    const removeKeys = [];
+    for (const rawId of tabIds) {
+      const tabId = Number(rawId);
+      if (SNAPI.running && SNAPI.activeTabId === tabId) continue;
+      const task = all[TASK_PREFIX + rawId];
+      const state = all[STATE_PREFIX + rawId];
+      const updatedAt = Math.max(
+        Number(task && task.updatedAt) || 0,
+        Number(state && state.updatedAt) || 0
+      );
+      const stale = updatedAt > 0 && now - updatedAt > SNAPI_STALE_MS;
+      const tabClosed = !openTabs.has(tabId);
+      if (stale || tabClosed) {
+        for (const prefix of prefixes) {
+          const key = prefix + rawId;
+          if (key in all) removeKeys.push(key);
+        }
+      }
+    }
+    if (removeKeys.length) await chrome.storage.local.remove(removeKeys);
+  } catch (e) {
+    snapiWarn('storage prune failed', e);
+  }
+}
+
 async function handleMessage(msg, sender) {
   if (!msg || !msg.type) return { ok: false, error: 'Unknown message' };
 
@@ -549,6 +646,7 @@ async function handleMessage(msg, sender) {
 
   if (msg.type === 'START_SCRAPE') {
     if (typeof msg.tabId !== 'number') return { ok: false, error: 'Missing tab' };
+    await snapiPruneStorage();
     const tabId = msg.tabId;
     const baseUrl = ACTIVE_SEARCH_URLS[tabId] || (await storageGet('sn_url_' + tabId));
     if (!baseUrl) {
@@ -600,17 +698,19 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAME) snapiResumeAll().catch(() => {});
 });
 chrome.runtime.onStartup.addListener(() => {
-  snapiResumeAll().catch(() => {});
+  snapiPruneStorage().then(() => snapiResumeAll()).catch(() => {});
 });
 chrome.runtime.onInstalled.addListener(() => {
-  snapiResumeAll().catch(() => {});
+  snapiPruneStorage().then(() => snapiResumeAll()).catch(() => {});
 });
 
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (details.method !== 'GET' || details.tabId === -1) return;
-    ACTIVE_SEARCH_URLS[details.tabId] = details.url;
-    chrome.storage.local.set({ ['sn_url_' + details.tabId]: details.url }).catch(() => {});
+    if (SNAPI.running && SNAPI.activeTabId === details.tabId) return;
+    const cleanUrl = snapiStripStartParam(details.url);
+    ACTIVE_SEARCH_URLS[details.tabId] = cleanUrl;
+    chrome.storage.local.set({ ['sn_url_' + details.tabId]: cleanUrl }).catch(() => {});
   },
   { urls: ['*://www.linkedin.com/sales-api/salesApiLeadSearch*', '*://linkedin.com/sales-api/salesApiLeadSearch*'] },
   []
@@ -620,3 +720,5 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   delete ACTIVE_SEARCH_URLS[tabId];
   chrome.storage.local.remove('sn_url_' + tabId).catch(() => {});
 });
+
+snapiPruneStorage().then(() => snapiResumeAll()).catch(() => {});

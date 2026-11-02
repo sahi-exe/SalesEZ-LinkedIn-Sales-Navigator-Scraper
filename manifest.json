@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "SalesEZ: LinkedIn Sales Navigator Scraper",
   "short_name": "SalesEZ",
-  "version": "1.0",
+  "version": "1.1",
   "description": "Export LinkedIn Sales Navigator leads to Google Sheets or CSV in one click. Auto-scrub names, titles, companies & URLs 100% locally.",
   "homepage_url": "https://github.com/sahil-exz/SalesEZ-LinkedIn-Sales-Navigator-Scraper",
   "permissions": [

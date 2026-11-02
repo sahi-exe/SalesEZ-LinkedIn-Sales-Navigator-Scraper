@@ -11,6 +11,15 @@ function cleanText(str) {
   return String(str).replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+function escapeHtml(str) {
+  return String(str === undefined || str === null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function statusLabel(state) {
   if (!state) return 'Idle';
   return STATUS_LABELS[state.status] || state.status || 'Idle';
@@ -126,8 +135,10 @@ function renderPreview(leads) {
   const rowsHtml = head
     .map((l, i) => {
       const idStr = String(i + 1).padStart(3, '0');
-      const nameStr = cleanText(l.name || '');
-      const titleCompany = [cleanText(l.jobTitle || ''), cleanText(l.company || '')].filter(Boolean).join(', ');
+      const nameStr = escapeHtml(cleanText(l.name || ''));
+      const titleCompany = escapeHtml(
+        [cleanText(l.jobTitle || ''), cleanText(l.company || '')].filter(Boolean).join(', ')
+      );
       return `
       <div class="lead-row">
         <span class="col-id">${idStr}</span>
@@ -276,7 +287,8 @@ async function tsvExport() {
     return;
   }
   const scrubbed = scrubLeads(leads);
-  const clean = (v) => cleanText(v).replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
+  const clean = (v) =>
+    sanitizeSpreadsheetCell(cleanText(v)).replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
 
   let tsv = SHEET_HEADERS.join('\t') + '\n';
   scrubbed.forEach((l) => {
@@ -324,10 +336,11 @@ async function tsvExport() {
 $('copyTsvBtn').addEventListener('click', tsvExport);
 
 $('csvBtn').addEventListener('click', async () => {
-  const leads = await loadLeads();
+  const leads = cachedLeads.length ? cachedLeads : await loadLeads();
   if (!leads.length) return;
   const scrubbed = scrubLeads(leads);
-  const quote = (v) => '"' + cleanText(v).replace(/"/g, '""') + '"';
+  const quote = (v) =>
+    '"' + sanitizeSpreadsheetCell(cleanText(v)).replace(/"/g, '""') + '"';
   let csv = '\uFEFF' + SHEET_HEADERS.map(quote).join(',') + '\r\n';
   scrubbed.forEach((l) => {
     csv += [l.name, l.jobTitle, l.company, l.companyUrl, l.location, l.profileUrl].map(quote).join(',') + '\r\n';
